@@ -2,7 +2,6 @@ const newman = require('newman');
 const fs = require('fs-extra');
 const path = require('path');
 const chalk = require('chalk');
-const { minimatch } = require('minimatch');
 
 /**
  * Load external test scripts
@@ -40,97 +39,50 @@ function loadTestScripts() {
 }
 
 /**
- * Get URL from request object - Enhanced to handle all Postman URL formats
+ * Simple wildcard pattern matching
+ * Supports * (matches any characters) and ? (matches single character)
+ */
+function wildcardMatch(text, pattern) {
+  if (!pattern) return true;
+  if (!text) return false;
+  
+  // Convert to lowercase for case-insensitive matching
+  text = text.toLowerCase();
+  pattern = pattern.toLowerCase();
+  
+  // If no wildcards, just check if pattern is contained in text
+  if (!pattern.includes('*') && !pattern.includes('?')) {
+    return text.includes(pattern);
+  }
+  
+  // Convert wildcard pattern to regex
+  // Escape special regex characters except * and ?
+  const regexPattern = pattern
+    .replace(/[.+^${}()|[\]\\]/g, '\\$&')  // Escape special chars
+    .replace(/\*/g, '.*')                   // * matches any characters
+    .replace(/\?/g, '.');                   // ? matches single character
+  
+  const regex = new RegExp(`^${regexPattern}$`, 'i');
+  return regex.test(text);
+}
+
+/**
+ * Get URL from request object - Simplified to use raw URL
  */
 function getRequestUrl(request) {
   if (!request) return '';
   
-  // Case 1: URL is a simple string
+  // Simple case: URL is a string
   if (typeof request.url === 'string') {
     return request.url;
   }
   
-  // Case 2: URL is an object
-  if (request.url && typeof request.url === 'object') {
-    // First priority: use raw URL if available
-    if (request.url.raw) {
-      return request.url.raw;
-    }
-    
-    // Second priority: construct from host and path arrays
-    let constructedUrl = '';
-    
-    // Handle host
-    if (request.url.host) {
-      if (Array.isArray(request.url.host)) {
-        constructedUrl = request.url.host.join('.');
-      } else if (typeof request.url.host === 'string') {
-        constructedUrl = request.url.host;
-      }
-    }
-    
-    // Handle protocol (if specified)
-    if (request.url.protocol) {
-      constructedUrl = `${request.url.protocol}://${constructedUrl}`;
-    }
-    
-    // Handle port (if specified)
-    if (request.url.port) {
-      constructedUrl = `${constructedUrl}:${request.url.port}`;
-    }
-    
-    // Handle path
-    if (request.url.path) {
-      let pathString = '';
-      if (Array.isArray(request.url.path)) {
-        pathString = request.url.path.join('/');
-      } else if (typeof request.url.path === 'string') {
-        pathString = request.url.path;
-      }
-      
-      // Add leading slash if not present and we have a host
-      if (pathString && constructedUrl) {
-        constructedUrl = `${constructedUrl}/${pathString}`;
-      } else if (pathString) {
-        constructedUrl = pathString;
-      }
-    }
-    
-    // Handle query parameters (if specified)
-    if (request.url.query && Array.isArray(request.url.query) && request.url.query.length > 0) {
-      const queryParams = request.url.query
-        .filter(q => q.key && !q.disabled)
-        .map(q => `${q.key}=${q.value || ''}`)
-        .join('&');
-      if (queryParams) {
-        constructedUrl = `${constructedUrl}?${queryParams}`;
-      }
-    }
-    
-    return constructedUrl;
+  // URL is an object - use raw property
+  if (request.url && typeof request.url === 'object' && request.url.raw) {
+    return request.url.raw;
   }
   
   return '';
-}
-
-/**
- * Check if request URL matches the pattern
- */
-function matchesPattern(url, pattern) {
-  if (!pattern) return true;
-  if (!url) return false;
-  
-  // Simple contains check if no wildcards
-  if (!pattern.includes('*') && !pattern.includes('?') && !pattern.includes('[')) {
-    return url.toLowerCase().includes(pattern.toLowerCase());
-  }
-  
-  // Use minimatch for wildcard pattern matching
-  return minimatch(url, pattern, { 
-    nocase: true,  // Case-insensitive matching
-    matchBase: false,  // Match full path
-    partial: true  // Allow partial matches
-  });
 }
 
 /**
@@ -156,7 +108,7 @@ function filterCollectionByPattern(items, pattern, stats) {
       const url = getRequestUrl(item.request);
       const requestName = item.name || 'Unnamed Request';
       
-      if (matchesPattern(url, pattern)) {
+      if (wildcardMatch(url, pattern)) {
         filteredItems.push(item);
         stats.matched++;
         stats.matchedUrls.push({
@@ -206,10 +158,8 @@ function applyRequestFilter(collection, pattern) {
  */
 async function injectScriptsIntoCollection(collectionPath, scripts) {
   try {
-    // Read the collection file
     const collection = await fs.readJSON(collectionPath);
     
-    // Inject scripts into each request
     if (collection.item && Array.isArray(collection.item)) {
       injectScriptsRecursive(collection.item, scripts);
     }
@@ -221,27 +171,20 @@ async function injectScriptsIntoCollection(collectionPath, scripts) {
 }
 
 /**
- * Recursively inject scripts into all items (including nested folders)
+ * Recursively inject scripts into all items
  */
 function injectScriptsRecursive(items, scripts) {
   items.forEach(item => {
-    // If item is a folder, recurse into it
     if (item.item && Array.isArray(item.item)) {
       injectScriptsRecursive(item.item, scripts);
     }
     
-    // If item is a request, inject scripts
     if (item.request) {
-      // Inject pre-request script
       if (scripts.preRequest) {
         if (!item.event) {
           item.event = [];
         }
-        
-        // Remove existing prerequest events
         item.event = item.event.filter(e => e.listen !== 'prerequest');
-        
-        // Add new prerequest event
         item.event.push({
           listen: 'prerequest',
           script: {
@@ -251,16 +194,11 @@ function injectScriptsRecursive(items, scripts) {
         });
       }
       
-      // Inject post-request (test) script
       if (scripts.postRequest) {
         if (!item.event) {
           item.event = [];
         }
-        
-        // Remove existing test events
         item.event = item.event.filter(e => e.listen !== 'test');
-        
-        // Add new test event
         item.event.push({
           listen: 'test',
           script: {
@@ -298,21 +236,13 @@ function buildNewmanOptions(cliOptions, collectionOrPath) {
     reporters: cliOptions.reporters ? cliOptions.reporters.split(',') : ['cli']
   };
 
-  // Environment and globals
   if (cliOptions.environment) newmanOptions.environment = cliOptions.environment;
   if (cliOptions.globals) newmanOptions.globals = cliOptions.globals;
-  
-  // Iteration data
   if (cliOptions.iterationData) newmanOptions.iterationData = cliOptions.iterationData;
   if (cliOptions.iterationCount) newmanOptions.iterationCount = cliOptions.iterationCount;
-  
-  // Folder
   if (cliOptions.folder) newmanOptions.folder = cliOptions.folder;
-  
-  // Working directory
   if (cliOptions.workingDir) newmanOptions.workingDir = cliOptions.workingDir;
   
-  // Timeouts
   if (cliOptions.timeout || cliOptions.timeoutRequest || cliOptions.timeoutScript) {
     newmanOptions.timeout = {};
     if (cliOptions.timeout) newmanOptions.timeout.global = cliOptions.timeout;
@@ -320,21 +250,13 @@ function buildNewmanOptions(cliOptions, collectionOrPath) {
     if (cliOptions.timeoutScript) newmanOptions.timeout.script = cliOptions.timeoutScript;
   }
   
-  // Delay
   if (cliOptions.delayRequest) newmanOptions.delayRequest = cliOptions.delayRequest;
-  
-  // Bail options
   if (cliOptions.bail) newmanOptions.bail = true;
   if (cliOptions.suppressExitCode) newmanOptions.suppressExitCode = true;
-  
-  // Color
   if (cliOptions.color) newmanOptions.color = cliOptions.color;
-  
-  // SSL options
   if (cliOptions.insecure) newmanOptions.insecure = true;
   if (cliOptions.ignoreRedirects) newmanOptions.ignoreRedirects = true;
   
-  // SSL certificates
   if (cliOptions.sslClientCert || cliOptions.sslClientKey) {
     newmanOptions.sslClientCert = cliOptions.sslClientCert;
     newmanOptions.sslClientKey = cliOptions.sslClientKey;
@@ -343,30 +265,21 @@ function buildNewmanOptions(cliOptions, collectionOrPath) {
     }
   }
   
-  if (cliOptions.sslExtraCaCerts) {
-    newmanOptions.sslExtraCaCerts = cliOptions.sslExtraCaCerts;
-  }
-  
-  // Cookie jar
+  if (cliOptions.sslExtraCaCerts) newmanOptions.sslExtraCaCerts = cliOptions.sslExtraCaCerts;
   if (cliOptions.cookieJar) newmanOptions.cookieJar = cliOptions.cookieJar;
   if (cliOptions.exportCookieJar) newmanOptions.exportCookieJar = cliOptions.exportCookieJar;
-  
-  // Export options
   if (cliOptions.exportEnvironment) newmanOptions.exportEnvironment = cliOptions.exportEnvironment;
   if (cliOptions.exportGlobals) newmanOptions.exportGlobals = cliOptions.exportGlobals;
   if (cliOptions.exportCollection) newmanOptions.exportCollection = cliOptions.exportCollection;
   
-  // Reporter options
   const reporterOptions = {};
   
   if (cliOptions.reporterJsonExport) {
     reporterOptions.json = { export: cliOptions.reporterJsonExport };
   }
-  
   if (cliOptions.reporterHtmlExport) {
     reporterOptions.html = { export: cliOptions.reporterHtmlExport };
   }
-  
   if (cliOptions.reporterJunitExport) {
     reporterOptions.junit = { export: cliOptions.reporterJunitExport };
   }
@@ -386,25 +299,16 @@ function buildNewmanOptions(cliOptions, collectionOrPath) {
     newmanOptions.reporter = reporterOptions;
   }
   
-  // Global and environment variables
   if (cliOptions.globalVar && cliOptions.globalVar.length > 0) {
     newmanOptions.globalVar = parseKeyValuePairs(cliOptions.globalVar);
   }
-  
   if (cliOptions.envVar && cliOptions.envVar.length > 0) {
     newmanOptions.envVar = parseKeyValuePairs(cliOptions.envVar);
   }
   
-  // Verbose
   if (cliOptions.verbose) newmanOptions.verbose = true;
-  
-  // Disable unicode
   if (cliOptions.disableUnicode) newmanOptions.disableUnicode = true;
-  
-  // Insecure file read
-  if (cliOptions.noInsecureFileRead === false) {
-    newmanOptions.insecureFileRead = false;
-  }
+  if (cliOptions.noInsecureFileRead === false) newmanOptions.insecureFileRead = false;
   
   return newmanOptions;
 }
@@ -415,14 +319,12 @@ function buildNewmanOptions(cliOptions, collectionOrPath) {
 async function getCollectionFiles(sourcePath) {
   try {
     const stats = await fs.stat(sourcePath);
-    
     if (!stats.isDirectory()) {
       throw new Error(`Source path ${sourcePath} is not a directory`);
     }
     
     const files = await fs.readdir(sourcePath);
     const jsonFiles = files.filter(file => path.extname(file).toLowerCase() === '.json');
-    
     return jsonFiles.map(file => path.join(sourcePath, file));
   } catch (error) {
     throw new Error(`Error reading source directory: ${error.message}`);
@@ -464,17 +366,14 @@ async function runCollections(options) {
   
   console.log(chalk.cyan(`\n📁 Scanning collections in: ${sourcePath}\n`));
   
-  // Show request pattern filter if provided
   if (options.request) {
     console.log(chalk.cyan(`🔍 Request URL filter: ${options.request}\n`));
   }
   
-  // Load test scripts
   console.log(chalk.cyan('📝 Loading test scripts...\n'));
   const scripts = loadTestScripts();
   console.log('');
   
-  // Get all collection files
   const collectionFiles = await getCollectionFiles(sourcePath);
   
   if (collectionFiles.length === 0) {
@@ -483,7 +382,6 @@ async function runCollections(options) {
   
   console.log(chalk.yellow(`Found ${collectionFiles.length} JSON file(s)\n`));
   
-  // Filter valid collections
   const validCollections = [];
   for (const file of collectionFiles) {
     if (await isValidCollection(file)) {
@@ -500,10 +398,8 @@ async function runCollections(options) {
   console.log(chalk.green(`\n✓ Found ${validCollections.length} valid collection(s)\n`));
   console.log(chalk.cyan('━'.repeat(80)));
   
-  // Store results
   const results = [];
   
-  // Run each collection
   for (let i = 0; i < validCollections.length; i++) {
     const collectionPath = validCollections[i];
     const collectionName = path.basename(collectionPath);
@@ -512,11 +408,9 @@ async function runCollections(options) {
     console.log(chalk.cyan('─'.repeat(80)));
     
     try {
-      // Inject scripts into collection
       console.log(chalk.gray('Injecting test scripts...'));
       let modifiedCollection = await injectScriptsIntoCollection(collectionPath, scripts);
       
-      // Apply request filter if pattern is provided
       let filterStats = null;
       if (options.request) {
         console.log(chalk.gray(`Filtering requests by pattern: ${options.request}`));
@@ -529,7 +423,6 @@ async function runCollections(options) {
           console.log(chalk.gray(`  Matched: ${filterStats.matched}`));
           console.log(chalk.gray(`  Skipped: ${filterStats.skipped}`));
           
-          // Error if no requests matched
           if (filterStats.matched === 0) {
             console.log(chalk.red(`\n✗ ERROR: No requests matched the pattern "${options.request}"`));
             console.log(chalk.red(`  Collection: ${collectionName}`));
@@ -565,13 +458,9 @@ async function runCollections(options) {
         }
       }
       
-      // Build Newman options with modified collection
       const newmanOptions = buildNewmanOptions(options, modifiedCollection);
-      
-      // Run the collection
       const summary = await runCollection(newmanOptions);
       
-      // Print summary
       console.log(chalk.green(`\n✓ Collection completed: ${collectionName}`));
       console.log(chalk.gray(`  Total Requests: ${summary.run.stats.requests.total}`));
       console.log(chalk.gray(`  Failed Requests: ${summary.run.stats.requests.failed}`));
@@ -604,12 +493,10 @@ async function runCollections(options) {
     console.log(chalk.cyan('━'.repeat(80)));
   }
   
-  // Generate report if specified
   if (options.report) {
     await generateReport(results, options.report);
   }
   
-  // Final summary
   printFinalSummary(results);
   
   return results;
@@ -668,6 +555,6 @@ module.exports = {
   loadTestScripts,
   injectScriptsIntoCollection,
   applyRequestFilter,
-  matchesPattern,
+  wildcardMatch,
   getRequestUrl
 };
