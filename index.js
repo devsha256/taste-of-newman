@@ -4,6 +4,113 @@ const path = require('path');
 const chalk = require('chalk');
 
 /**
+ * Load external test scripts
+ */
+function loadTestScripts() {
+  const testsDir = path.join(__dirname, 'tests');
+  let preRequestScript = '';
+  let postRequestScript = '';
+  
+  try {
+    const preRequestPath = path.join(testsDir, 'pre-request.js');
+    const postRequestPath = path.join(testsDir, 'post-request.js');
+    
+    if (fs.existsSync(preRequestPath)) {
+      preRequestScript = fs.readFileSync(preRequestPath, 'utf8');
+      console.log(chalk.green('✓ Loaded pre-request.js'));
+    } else {
+      console.log(chalk.yellow('⚠ pre-request.js not found, skipping'));
+    }
+    
+    if (fs.existsSync(postRequestPath)) {
+      postRequestScript = fs.readFileSync(postRequestPath, 'utf8');
+      console.log(chalk.green('✓ Loaded post-request.js'));
+    } else {
+      console.log(chalk.yellow('⚠ post-request.js not found, skipping'));
+    }
+  } catch (error) {
+    console.log(chalk.yellow('⚠ Could not load test scripts:', error.message));
+  }
+  
+  return {
+    preRequest: preRequestScript,
+    postRequest: postRequestScript
+  };
+}
+
+/**
+ * Inject scripts into collection
+ */
+async function injectScriptsIntoCollection(collectionPath, scripts) {
+  try {
+    // Read the collection file
+    const collection = await fs.readJSON(collectionPath);
+    
+    // Inject scripts into each request
+    if (collection.item && Array.isArray(collection.item)) {
+      injectScriptsRecursive(collection.item, scripts);
+    }
+    
+    return collection;
+  } catch (error) {
+    throw new Error(`Failed to inject scripts into collection: ${error.message}`);
+  }
+}
+
+/**
+ * Recursively inject scripts into all items (including nested folders)
+ */
+function injectScriptsRecursive(items, scripts) {
+  items.forEach(item => {
+    // If item is a folder, recurse into it
+    if (item.item && Array.isArray(item.item)) {
+      injectScriptsRecursive(item.item, scripts);
+    }
+    
+    // If item is a request, inject scripts
+    if (item.request) {
+      // Inject pre-request script
+      if (scripts.preRequest) {
+        if (!item.event) {
+          item.event = [];
+        }
+        
+        // Remove existing prerequest events
+        item.event = item.event.filter(e => e.listen !== 'prerequest');
+        
+        // Add new prerequest event
+        item.event.push({
+          listen: 'prerequest',
+          script: {
+            type: 'text/javascript',
+            exec: scripts.preRequest.split('\n')
+          }
+        });
+      }
+      
+      // Inject post-request (test) script
+      if (scripts.postRequest) {
+        if (!item.event) {
+          item.event = [];
+        }
+        
+        // Remove existing test events
+        item.event = item.event.filter(e => e.listen !== 'test');
+        
+        // Add new test event
+        item.event.push({
+          listen: 'test',
+          script: {
+            type: 'text/javascript',
+            exec: scripts.postRequest.split('\n')
+          }
+        });
+      }
+    }
+  });
+}
+
+/**
  * Parse key=value pairs into an object
  */
 function parseKeyValuePairs(pairs) {
@@ -22,9 +129,9 @@ function parseKeyValuePairs(pairs) {
 /**
  * Build Newman options from CLI options
  */
-function buildNewmanOptions(cliOptions, collectionPath) {
+function buildNewmanOptions(cliOptions, collectionOrPath) {
   const newmanOptions = {
-    collection: collectionPath,
+    collection: collectionOrPath,
     reporters: cliOptions.reporters ? cliOptions.reporters.split(',') : ['cli']
   };
 
@@ -194,6 +301,11 @@ async function runCollections(options) {
   
   console.log(chalk.cyan(`\n📁 Scanning collections in: ${sourcePath}\n`));
   
+  // Load test scripts
+  console.log(chalk.cyan('📝 Loading test scripts...\n'));
+  const scripts = loadTestScripts();
+  console.log('');
+  
   // Get all collection files
   const collectionFiles = await getCollectionFiles(sourcePath);
   
@@ -232,7 +344,14 @@ async function runCollections(options) {
     console.log(chalk.cyan('─'.repeat(80)));
     
     try {
-      const newmanOptions = buildNewmanOptions(options, collectionPath);
+      // Inject scripts into collection
+      console.log(chalk.gray('Injecting test scripts...'));
+      const modifiedCollection = await injectScriptsIntoCollection(collectionPath, scripts);
+      
+      // Build Newman options with modified collection
+      const newmanOptions = buildNewmanOptions(options, modifiedCollection);
+      
+      // Run the collection
       const summary = await runCollection(newmanOptions);
       
       // Print summary
@@ -327,5 +446,7 @@ module.exports = {
   buildNewmanOptions,
   getCollectionFiles,
   isValidCollection,
-  runCollection
+  runCollection,
+  loadTestScripts,
+  injectScriptsIntoCollection
 };
