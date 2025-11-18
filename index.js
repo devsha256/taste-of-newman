@@ -2,7 +2,7 @@ const newman = require('newman');
 const fs = require('fs-extra');
 const path = require('path');
 const chalk = require('chalk');
-const { minimatch } = require('minimatch');  // ← CORRECTED: destructure minimatch
+const { minimatch } = require('minimatch');
 
 /**
  * Load external test scripts
@@ -40,23 +40,74 @@ function loadTestScripts() {
 }
 
 /**
- * Get URL from request object
+ * Get URL from request object - Enhanced to handle all Postman URL formats
  */
 function getRequestUrl(request) {
   if (!request) return '';
   
+  // Case 1: URL is a simple string
   if (typeof request.url === 'string') {
     return request.url;
   }
   
-  if (request.url && request.url.raw) {
-    return request.url.raw;
-  }
-  
-  if (request.url && request.url.host && request.url.path) {
-    const host = Array.isArray(request.url.host) ? request.url.host.join('.') : request.url.host;
-    const urlPath = Array.isArray(request.url.path) ? request.url.path.join('/') : request.url.path;
-    return `${host}/${urlPath}`;
+  // Case 2: URL is an object
+  if (request.url && typeof request.url === 'object') {
+    // First priority: use raw URL if available
+    if (request.url.raw) {
+      return request.url.raw;
+    }
+    
+    // Second priority: construct from host and path arrays
+    let constructedUrl = '';
+    
+    // Handle host
+    if (request.url.host) {
+      if (Array.isArray(request.url.host)) {
+        constructedUrl = request.url.host.join('.');
+      } else if (typeof request.url.host === 'string') {
+        constructedUrl = request.url.host;
+      }
+    }
+    
+    // Handle protocol (if specified)
+    if (request.url.protocol) {
+      constructedUrl = `${request.url.protocol}://${constructedUrl}`;
+    }
+    
+    // Handle port (if specified)
+    if (request.url.port) {
+      constructedUrl = `${constructedUrl}:${request.url.port}`;
+    }
+    
+    // Handle path
+    if (request.url.path) {
+      let pathString = '';
+      if (Array.isArray(request.url.path)) {
+        pathString = request.url.path.join('/');
+      } else if (typeof request.url.path === 'string') {
+        pathString = request.url.path;
+      }
+      
+      // Add leading slash if not present and we have a host
+      if (pathString && constructedUrl) {
+        constructedUrl = `${constructedUrl}/${pathString}`;
+      } else if (pathString) {
+        constructedUrl = pathString;
+      }
+    }
+    
+    // Handle query parameters (if specified)
+    if (request.url.query && Array.isArray(request.url.query) && request.url.query.length > 0) {
+      const queryParams = request.url.query
+        .filter(q => q.key && !q.disabled)
+        .map(q => `${q.key}=${q.value || ''}`)
+        .join('&');
+      if (queryParams) {
+        constructedUrl = `${constructedUrl}?${queryParams}`;
+      }
+    }
+    
+    return constructedUrl;
   }
   
   return '';
@@ -67,6 +118,7 @@ function getRequestUrl(request) {
  */
 function matchesPattern(url, pattern) {
   if (!pattern) return true;
+  if (!url) return false;
   
   // Simple contains check if no wildcards
   if (!pattern.includes('*') && !pattern.includes('?') && !pattern.includes('[')) {
@@ -76,7 +128,8 @@ function matchesPattern(url, pattern) {
   // Use minimatch for wildcard pattern matching
   return minimatch(url, pattern, { 
     nocase: true,  // Case-insensitive matching
-    matchBase: false  // Match full path
+    matchBase: false,  // Match full path
+    partial: true  // Allow partial matches
   });
 }
 
@@ -101,13 +154,21 @@ function filterCollectionByPattern(items, pattern, stats) {
     else if (item.request) {
       stats.total++;
       const url = getRequestUrl(item.request);
+      const requestName = item.name || 'Unnamed Request';
       
       if (matchesPattern(url, pattern)) {
         filteredItems.push(item);
         stats.matched++;
-        stats.matchedUrls.push(url);
+        stats.matchedUrls.push({
+          name: requestName,
+          url: url
+        });
       } else {
         stats.skipped++;
+        stats.skippedUrls.push({
+          name: requestName,
+          url: url
+        });
       }
     }
   });
@@ -123,7 +184,8 @@ function applyRequestFilter(collection, pattern) {
     total: 0,
     matched: 0,
     skipped: 0,
-    matchedUrls: []
+    matchedUrls: [],
+    skippedUrls: []
   };
   
   if (!pattern) {
@@ -472,6 +534,13 @@ async function runCollections(options) {
             console.log(chalk.red(`\n✗ ERROR: No requests matched the pattern "${options.request}"`));
             console.log(chalk.red(`  Collection: ${collectionName}`));
             
+            if (options.verbose && filterStats.skippedUrls.length > 0) {
+              console.log(chalk.yellow('\n  Available URLs in collection:'));
+              filterStats.skippedUrls.forEach(item => {
+                console.log(chalk.yellow(`    - [${item.name}] ${item.url}`));
+              });
+            }
+            
             results.push({
               collection: collectionName,
               success: false,
@@ -489,8 +558,8 @@ async function runCollections(options) {
           
           if (options.verbose && filterStats.matchedUrls.length > 0) {
             console.log(chalk.gray('\n  Matched URLs:'));
-            filterStats.matchedUrls.forEach(url => {
-              console.log(chalk.gray(`    - ${url}`));
+            filterStats.matchedUrls.forEach(item => {
+              console.log(chalk.gray(`    - [${item.name}] ${item.url}`));
             });
           }
         }
@@ -599,5 +668,6 @@ module.exports = {
   loadTestScripts,
   injectScriptsIntoCollection,
   applyRequestFilter,
-  matchesPattern
+  matchesPattern,
+  getRequestUrl
 };
