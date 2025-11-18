@@ -1,0 +1,29 @@
+{
+  "name": "newman-batch-cli",
+  "version": "1.0.0",
+  "description": "CLI wrapper for Newman to batch execute Postman collections from a folder",
+  "main": "index.js",
+  "bin": {
+    "newman-batch": "./bin/newman-batch.js"
+  },
+  "scripts": {
+    "start": "node bin/newman-batch.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [
+    "newman",
+    "postman",
+    "cli",
+    "collection",
+    "testing",
+    "batch"
+  ],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "newman": "^6.2.1",
+    "commander": "^12.0.0",
+    "chalk": "^4.1.2",
+    "fs-extra": "^11.2.0"
+  }
+}
