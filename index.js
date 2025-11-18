@@ -2,6 +2,7 @@ const newman = require('newman');
 const fs = require('fs-extra');
 const path = require('path');
 const chalk = require('chalk');
+const minimatch = require('minimatch');
 
 /**
  * Load external test scripts
@@ -36,6 +37,101 @@ function loadTestScripts() {
     preRequest: preRequestScript,
     postRequest: postRequestScript
   };
+}
+
+/**
+ * Get URL from request object
+ */
+function getRequestUrl(request) {
+  if (!request) return '';
+  
+  if (typeof request.url === 'string') {
+    return request.url;
+  }
+  
+  if (request.url && request.url.raw) {
+    return request.url.raw;
+  }
+  
+  if (request.url && request.url.host && request.url.path) {
+    const host = Array.isArray(request.url.host) ? request.url.host.join('.') : request.url.host;
+    const urlPath = Array.isArray(request.url.path) ? request.url.path.join('/') : request.url.path;
+    return `${host}/${urlPath}`;
+  }
+  
+  return '';
+}
+
+/**
+ * Check if request URL matches the pattern
+ */
+function matchesPattern(url, pattern) {
+  if (!pattern) return true;
+  
+  // Use minimatch for wildcard pattern matching
+  return minimatch(url, pattern, { 
+    nocase: true,  // Case-insensitive matching
+    matchBase: false  // Match full path
+  });
+}
+
+/**
+ * Filter collection items based on URL pattern
+ */
+function filterCollectionByPattern(items, pattern, stats) {
+  const filteredItems = [];
+  
+  items.forEach(item => {
+    // If item is a folder, recurse into it
+    if (item.item && Array.isArray(item.item)) {
+      const filteredSubItems = filterCollectionByPattern(item.item, pattern, stats);
+      if (filteredSubItems.length > 0) {
+        filteredItems.push({
+          ...item,
+          item: filteredSubItems
+        });
+      }
+    }
+    // If item is a request, check if it matches pattern
+    else if (item.request) {
+      stats.total++;
+      const url = getRequestUrl(item.request);
+      
+      if (matchesPattern(url, pattern)) {
+        filteredItems.push(item);
+        stats.matched++;
+        stats.matchedUrls.push(url);
+      } else {
+        stats.skipped++;
+      }
+    }
+  });
+  
+  return filteredItems;
+}
+
+/**
+ * Apply request pattern filter to collection
+ */
+function applyRequestFilter(collection, pattern) {
+  const stats = {
+    total: 0,
+    matched: 0,
+    skipped: 0,
+    matchedUrls: []
+  };
+  
+  if (!pattern) {
+    return { collection, stats: null };
+  }
+  
+  const filteredCollection = { ...collection };
+  
+  if (collection.item && Array.isArray(collection.item)) {
+    filteredCollection.item = filterCollectionByPattern(collection.item, pattern, stats);
+  }
+  
+  return { collection: filteredCollection, stats };
 }
 
 /**
@@ -301,6 +397,11 @@ async function runCollections(options) {
   
   console.log(chalk.cyan(`\n📁 Scanning collections in: ${sourcePath}\n`));
   
+  // Show request pattern filter if provided
+  if (options.request) {
+    console.log(chalk.cyan(`🔍 Request URL filter: ${options.request}\n`));
+  }
+  
   // Load test scripts
   console.log(chalk.cyan('📝 Loading test scripts...\n'));
   const scripts = loadTestScripts();
@@ -346,7 +447,49 @@ async function runCollections(options) {
     try {
       // Inject scripts into collection
       console.log(chalk.gray('Injecting test scripts...'));
-      const modifiedCollection = await injectScriptsIntoCollection(collectionPath, scripts);
+      let modifiedCollection = await injectScriptsIntoCollection(collectionPath, scripts);
+      
+      // Apply request filter if pattern is provided
+      let filterStats = null;
+      if (options.request) {
+        console.log(chalk.gray(`Filtering requests by pattern: ${options.request}`));
+        const filtered = applyRequestFilter(modifiedCollection, options.request);
+        modifiedCollection = filtered.collection;
+        filterStats = filtered.stats;
+        
+        if (filterStats) {
+          console.log(chalk.gray(`  Total requests: ${filterStats.total}`));
+          console.log(chalk.gray(`  Matched: ${filterStats.matched}`));
+          console.log(chalk.gray(`  Skipped: ${filterStats.skipped}`));
+          
+          // Error if no requests matched
+          if (filterStats.matched === 0) {
+            console.log(chalk.red(`\n✗ ERROR: No requests matched the pattern "${options.request}"`));
+            console.log(chalk.red(`  Collection: ${collectionName}`));
+            
+            results.push({
+              collection: collectionName,
+              success: false,
+              error: `No requests matched the pattern "${options.request}"`,
+              filterStats
+            });
+            
+            if (options.bail) {
+              throw new Error(`No requests matched pattern in ${collectionName}`);
+            }
+            
+            console.log(chalk.cyan('━'.repeat(80)));
+            continue;
+          }
+          
+          if (options.verbose && filterStats.matchedUrls.length > 0) {
+            console.log(chalk.gray('\n  Matched URLs:'));
+            filterStats.matchedUrls.forEach(url => {
+              console.log(chalk.gray(`    - ${url}`));
+            });
+          }
+        }
+      }
       
       // Build Newman options with modified collection
       const newmanOptions = buildNewmanOptions(options, modifiedCollection);
@@ -365,7 +508,8 @@ async function runCollections(options) {
         collection: collectionName,
         success: summary.run.stats.assertions.failed === 0,
         stats: summary.run.stats,
-        failures: summary.run.failures
+        failures: summary.run.failures,
+        filterStats
       });
       
     } catch (error) {
@@ -448,5 +592,7 @@ module.exports = {
   isValidCollection,
   runCollection,
   loadTestScripts,
-  injectScriptsIntoCollection
+  injectScriptsIntoCollection,
+  applyRequestFilter,
+  matchesPattern
 };

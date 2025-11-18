@@ -12,7 +12,8 @@ program
 // Custom options
 program
   .option('--source <path>', 'Path to folder containing Postman collection JSON files (required)')
-  .option('--report <filename>', 'Output report file name');
+  .option('--report <filename>', 'Output report file name')
+  .option('--request <pattern>', 'Wildcard pattern to filter requests by URL (e.g., "**/users/**" or "*/api/v1/*")');
 
 // Newman standard options
 program
@@ -59,16 +60,16 @@ program.parse(process.argv);
 
 const options = program.opts();
 
+// Helper function to collect multiple values
+function collect(value, previous) {
+  return previous.concat([value]);
+}
+
 // Validate required option
 if (!options.source) {
   console.error('Error: --source option is required');
   console.log('Usage: newman-batch --source <path-to-collections-folder> [options]');
   process.exit(1);
-}
-
-// Helper function to collect multiple values
-function collect(value, previous) {
-  return previous.concat([value]);
 }
 
 // Run the batch collections
