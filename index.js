@@ -2,7 +2,7 @@ const newman = require('newman');
 const fs = require('fs-extra');
 const path = require('path');
 const chalk = require('chalk');
-const minimatch = require('minimatch');
+const { minimatch } = require('minimatch');  // ← CORRECTED: destructure minimatch
 
 /**
  * Load external test scripts
@@ -67,6 +67,11 @@ function getRequestUrl(request) {
  */
 function matchesPattern(url, pattern) {
   if (!pattern) return true;
+  
+  // Simple contains check if no wildcards
+  if (!pattern.includes('*') && !pattern.includes('?') && !pattern.includes('[')) {
+    return url.toLowerCase().includes(pattern.toLowerCase());
+  }
   
   // Use minimatch for wildcard pattern matching
   return minimatch(url, pattern, { 
