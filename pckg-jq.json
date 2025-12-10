@@ -1,0 +1,14 @@
+{
+  "name": "node-jq-local-cli",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Local project setup to use node-jq as a jq-like CLI without admin rights",
+  "scripts": {
+    "jq": "node ./node_modules/node-jq/bin/jq",
+    "jq:pretty": "node ./node_modules/node-jq/bin/jq '.'",
+    "jq:file": "node ./node_modules/node-jq/bin/jq '.' ./data.json"
+  },
+  "dependencies": {
+    "node-jq": "^6.3.1"
+  }
+}
